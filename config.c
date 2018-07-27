@@ -734,8 +734,7 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
   }
 
   if ((option = strstr(header, "Content-Length")) == NULL) {
-    *errstr = "no Content-Length";
-    return -1;
+    option = "Content-Length: 0";
   }
   if (sscanf(option, "Content-Length: %lu", contentlen) != 1) {
     *errstr = "invalid Content-Length";
