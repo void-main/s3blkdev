@@ -204,7 +204,6 @@ static int put_chunk(char *devicename, char *uncompbuf, char *name)
   comprlen = sizeof(compbuf);
   res = snappy_compress(uncompbuf, CHUNKSIZE, compbuf, &comprlen);
   if (res != SNAPPY_OK) {
-    logwarnx("snappy_compress(): %s/%s: %i", dev->cachedir, name, res);
     goto ERROR1;
   }
 
@@ -423,7 +422,7 @@ static int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
 
-  char buf[CHUNKSIZE]
+  char buf[CHUNKSIZE];
   fd = io_open_chunk(arg, chunk_no, buf);
   if (fd < 0)
     goto ERROR;
@@ -477,6 +476,7 @@ static int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
 {
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
+  struct timespec cooldown;
 
   char buf[CHUNKSIZE];
   fd = io_open_chunk(arg, chunk_no, buf);
