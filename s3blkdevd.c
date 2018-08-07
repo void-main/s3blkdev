@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
 #include <pthread.h>
 #include <time.h>
 #include <snappy-c.h>
@@ -31,6 +32,13 @@
 
 #define logerr(fmt, params ...) syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
+
+#define logwarnx(fmt, params ...) { \
+  syslog(LOG_WARNING, "%s (%s:%i): " fmt "\n", \
+         __FUNCTION__, __FILE__, __LINE__, ## params); \
+  warnx("%s (%s:%i): " fmt, \
+        __FUNCTION__, __FILE__, __LINE__, ## params); \
+} while (0)
 
 #define NBD_BUFSIZE 1024
 #define NBD_FLAG_FIXED_NEWSTYLE 1
@@ -435,7 +443,6 @@ static int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
 
   result = 0;
 
-ERROR1:
   if (close(fd) != 0)
     logerr("close(): %s", strerror(errno));
 
@@ -501,7 +508,6 @@ static int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
 
   result = 0;
 
-ERROR1:
   if (close(fd) != 0)
     logerr("close(): %s", strerror(errno));
 
