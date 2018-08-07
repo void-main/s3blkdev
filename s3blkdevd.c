@@ -300,15 +300,14 @@ static int io_send_reply (struct io_thread_arg *arg, uint32_t error,
   return 0;
 }
 
-static int io_lock_chunk (int fd, short int type, uint64_t start_offs,
-                          uint64_t end_offs)
+static int io_lock_chunk (int fd, short int type)
 {
   struct flock flk;
 
   flk.l_type = type;
   flk.l_whence = SEEK_SET;
-  flk.l_start = start_offs;
-  flk.l_len = end_offs - start_offs;
+  flk.l_start = 0;
+  flk.l_len = 0;
   flk.l_pid = 0;
 
   if (fcntl(fd, F_OFD_SETLKW, &flk) != 0) {
@@ -320,7 +319,7 @@ static int io_lock_chunk (int fd, short int type, uint64_t start_offs,
 }
 
 static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
-                          uint64_t start_offs, uint64_t end_offs)
+                          char *buf)
 {
   char name[17];
   int fd;
@@ -337,7 +336,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
       goto ERROR;
     }
 
-    if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
+    if (io_lock_chunk(fd, F_RDLCK) != 0)
       goto ERROR1;
 
     if (fstatat(arg->cachedir_fd, name, &st0, 0) != 0) {
@@ -364,13 +363,10 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
       goto ERROR1;
     }
 
-    if (st.st_size == CHUNKSIZE)
-      break;
-
-    if (io_lock_chunk(fd, F_UNLCK, start_offs, end_offs) != 0)
+    if (io_lock_chunk(fd, F_UNLCK) != 0)
       goto ERROR1;
 
-    if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
+    if (io_lock_chunk(fd, F_WRLCK) != 0)
       goto ERROR1;
 
     if (fstatat(arg->cachedir_fd, name, &st0, 0) != 0) {
@@ -397,15 +393,10 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
       goto ERROR1;
     }
 
-    if (st.st_size == CHUNKSIZE)
-      break;
+//    if (st.st_size == CHUNKSIZE)
+//      break;
 
-    while (fetch_chunk(arg->devicename, fd, name) != 0) {
-      if (lseek(fd, 0, SEEK_SET) == (off_t) -1) {
-        logerr("lseek(): %s", strerror(errno));
-        goto ERROR1;
-      }
-
+    while (fetch_chunk(arg->devicename, buf, name) != 0) {
       /* XXX */
       cooldown.tv_sec = 1;
       cooldown.tv_nsec = 0;
@@ -413,11 +404,6 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     }
 
     break;
-  }
-
-  if (lseek(fd, start_offs, SEEK_SET) == (off_t) -1) {
-    logerr("lseek(): %s", strerror(errno));
-    goto ERROR1;
   }
 
   return fd;
@@ -437,12 +423,14 @@ static int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
 
-  fd = io_open_chunk(arg, chunk_no, start_offs, end_offs);
+  char buf[CHUNKSIZE]
+  fd = io_open_chunk(arg, chunk_no, buf);
   if (fd < 0)
     goto ERROR;
 
-  if (read_all(fd, arg->buffer + *pos, len) != 0)
-    goto ERROR1;
+  memcpy(arg->buffer + *pos, buf + start_offs, len);
+  /*if (read_all(fd, arg->buffer + *pos, len) != 0)
+    goto ERROR1; */
 
   *pos += len;
 
@@ -490,12 +478,24 @@ static int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
 
-  fd = io_open_chunk(arg, chunk_no, start_offs, end_offs);
+  char buf[CHUNKSIZE];
+  fd = io_open_chunk(arg, chunk_no, buf);
   if (fd < 0)
     goto ERROR;
 
-  if (write_all(fd, arg->buffer + *pos, len) != 0)
-    goto ERROR1;
+  char name[17];
+  snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
+
+  memcpy(buf + start_offs, arg->buffer + *pos, len);
+
+  while (put_chunk(arg->devicename, buf, name) != 0) {
+    cooldown.tv_sec = 1;
+    cooldown.tv_nsec = 0;
+    nanosleep(&cooldown, NULL);
+  }
+
+/*  if (write_all(fd, arg->buffer + *pos, len) != 0)
+    goto ERROR1; */
 
   *pos += len;
 
