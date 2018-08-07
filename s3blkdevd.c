@@ -125,89 +125,11 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
   return 0;
 }
 
-#if 0
-/* demo, fetches chunks from /var/tmp/<devicename>.store */
-static int fetch_chunk (char *devicename, int fd, char *name)
-{
-  int storedir_fd, store_fd, result = -1, res;
-  unsigned int i;
-  char sdpath[PATH_MAX], uncompbuf[CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
-  struct stat st;
-  size_t uncomplen;
-
-  snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", devicename);
-
-  if ((storedir_fd = open(sdpath, O_RDONLY|O_DIRECTORY)) < 0) {
-    logerr("open(): %s: %s", sdpath, strerror(errno));
-    goto ERROR;
-  }
-
-  if ((store_fd = openat(storedir_fd, name, O_RDONLY)) < 0) {
-    if (errno != ENOENT) {
-      logerr("openat(): %s/%s: %s", sdpath, name, strerror(errno));
-      goto ERROR1;
-    }
-
-    memset(uncompbuf, 0, sizeof(uncompbuf));
-
-    for (i = 0; i < CHUNKSIZE/sizeof(uncompbuf); i++) {
-      if (write_all(fd, uncompbuf, sizeof(uncompbuf)) != 0)
-        goto ERROR1;
-    }
-
-    result = 0;
-  } else {
-    if (fstat(store_fd, &st) != 0) {
-      logerr("fstat(): %s/%s: %s", sdpath, name, strerror(errno));
-      goto ERROR1;
-    }
-
-    for (i = 0; i < CHUNKSIZE/sizeof(uncompbuf); i++) {
-      if (read_all(store_fd, compbuf, st.st_size) != 0)
-        goto ERROR2;
-
-      uncomplen = sizeof(uncompbuf);
-      res = snappy_uncompress(compbuf, st.st_size, uncompbuf, &uncomplen);
-      if (res != SNAPPY_OK) {
-        logerr("snappy_uncompress(): %s/%s: %i %lu %lu",
-               sdpath, name, res, st.st_size, uncomplen);
-        goto ERROR2;
-      }
-      if (uncomplen != CHUNKSIZE) {
-        logerr("snappy_uncompress(): %s/%s: uncomplen %lu, expected %u",
-               sdpath, name, uncomplen, CHUNKSIZE);
-        goto ERROR2;
-      }
-
-      if (write_all(fd, uncompbuf, uncomplen) != 0)
-        goto ERROR2;
-    }
-
-    result = 0;
-
-ERROR2:
-    if (close(store_fd) != 0) {
-      logerr("close(): %s", strerror(errno));
-      result = -1;
-    }
-  }
-
-ERROR1:
-  if (close(storedir_fd) != 0) {
-    logerr("close(): %s", strerror(errno));
-    result = -1;
-  }
-
-ERROR:
-  return result;
-}
-#endif
-
-static int fetch_chunk (char *devicename, int fd, char *name)
+static int fetch_chunk (char *devicename, char *uncompbuf, char *name)
 {
   int result = -1, res;
   unsigned int conn_num;
-  char uncompbuf[CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
+  char compbuf[COMPR_CHUNKSIZE];
   const char *err_str;
   struct s3connection *s3conn;
   unsigned char md5[16];
@@ -253,8 +175,60 @@ static int fetch_chunk (char *devicename, int fd, char *name)
     goto ERROR1;
   }
 
-  if (write_all(fd, uncompbuf, CHUNKSIZE) != 0)
+  result = 0;
+
+ERROR1:
+  s3_release_conn(s3conn);
+
+ERROR:
+  return result;
+}
+
+static int put_chunk(char *devicename, char *uncompbuf, char *name) 
+{
+  int result = -1, res;
+  unsigned int conn_num;
+  char compbuf[COMPR_CHUNKSIZE], buf[COMPR_CHUNKSIZE];
+  const char *err_str;
+  struct s3connection *s3conn;
+  unsigned char md5[16];
+  unsigned short code;
+  size_t comprlen, contentlen;
+
+  s3conn = s3_get_conn(&cfg, &conn_num, &err_str);
+  if (s3conn == NULL) {
+    logerr("s3_get_conn(): %s", err_str);
+    goto ERROR;
+  }
+
+  comprlen = sizeof(compbuf);
+  res = snappy_compress(uncompbuf, CHUNKSIZE, compbuf, &comprlen);
+  if (res != SNAPPY_OK) {
+    logwarnx("snappy_compress(): %s/%s: %i", dev->cachedir, name, res);
     goto ERROR1;
+  }
+
+  /* get md5 of chunk */
+  res = gnutls_hash_fast(GNUTLS_DIG_MD5, compbuf, comprlen, md5);
+  if (res != GNUTLS_E_SUCCESS) {
+    logwarnx("gnutls_hash_fast(): %s", gnutls_strerror(res));
+    goto ERROR1;
+  }
+
+  res = s3_request(&cfg, s3conn, &err_str, PUT, devicename, name,
+                   compbuf, comprlen, md5, &code, &contentlen, md5,
+                   buf, sizeof(buf));
+  if (res != 0) {
+    logerr("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+           devicename, name, err_str);
+    goto ERROR1;
+  }
+
+  if (code != 200) {
+    logerr("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+            s3conn->bucket, devicename, name, code);
+    goto ERROR1;
+  }
 
   result = 0;
 
@@ -745,9 +719,6 @@ static int nbd_handshake (struct client_thread_arg *arg)
   if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE) {
     logerr("client %s without NBD_FLAG_FIXED_NEWSTYLE (qemu?) may fail",
            arg->clientname);
-#if 0
-    return -1;
-#endif
   }
 
   for (;;) {
@@ -1028,57 +999,6 @@ ERROR:
   return NULL;
 }
 
-#if 0
-static int geom_client_worker_loop (struct client_thread_arg *arg)
-{
-  struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t type;
-    char handle[8];
-    uint64_t offs;
-    uint32_t len;
-  } req;
-  struct {
-    uint8_t cmd;
-    uint64_t offset;
-    uint32_t length;
-    uint64_t seq;
-    uint16_t error;
-  } __attribute__((packed)) geom_hdr;
-  fd_set rfds;
-  struct timeval timeout;
-  struct io_thread_arg *slot;
-  int res, result = -1;
-
-  FD_ZERO(&rfds);
-  FD_SET(arg->socket, &rfds);
-
-  timeout.tv_sec = 1;
-  timeout.tv_usec = 0;
-
-  res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
-  if (res == 0)
-    return 0;
-
-  if (res < 0) {
-    logerr("select(): %s", strerror(errno));
-    goto ERROR;
-  }
-
-  if (!running)
-    goto ERROR;
-
-  slot = find_free_io_worker();
-  if (slot == NULL)
-    goto ERROR;
-
-  if (read_all(arg->socket, &geom_hdr, sizeof(geom_hdr)) != 0)
-    goto ERROR1;
-
-  return 0;
-}
-#endif
-
 static int geom_handshake (struct client_thread_arg *arg)
 {
   struct {
@@ -1175,11 +1095,6 @@ static void *geom_client_worker (void *arg0)
 
   syslog(LOG_INFO, "client %s connecting to device %s\n", arg->clientname,
          arg->dev->name);
-
-#if 0
-  while (geom_client_worker_loop(arg))
-    ;;
-#endif
 
   syslog(LOG_INFO, "client %s disconnecting from device %s\n", arg->clientname,
          arg->dev->name);

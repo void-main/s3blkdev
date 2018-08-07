@@ -23,7 +23,7 @@
 #define TCP_RMEM (1024*1024)
 #define TCP_WMEM (1024*1024)
 
-#define CHUNKSIZE (8 * 1024 * 1024)
+#define CHUNKSIZE (128 * 1024)
 #define COMPR_CHUNKSIZE (CHUNKSIZE + CHUNKSIZE/4)
 
 #define DEFAULT_CONFIGFILE "/usr/local/etc/s3blkdev.conf"
