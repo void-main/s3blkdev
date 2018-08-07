@@ -176,7 +176,7 @@ static int fetch_chunk (char *devicename, char *uncompbuf, char *name)
       goto ERROR1;
     }
   } else if (code == 404) {
-    memset(uncompbuf, 0, sizeof(uncompbuf));
+    memset(uncompbuf, 0, CHUNKSIZE);
   } else {
     logerr("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
             s3conn->bucket, devicename, name, code);
